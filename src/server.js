@@ -1361,7 +1361,8 @@ function attachGatewayAuthHeader(req) {
   }
 }
 
-app.use(webhookRouter);
+// Mount Telegram webhook before the dashboard auth catch-all so Telegram requests bypass dashboard Basic Auth
+app.use("/webhook", webhookRouter);
 
 app.use(requireDashboardAuth, async (req, res) => {
   // If not configured, force users to /setup for any non-setup routes.

@@ -1,8 +1,9 @@
 import pg from "pg";
+const { Pool } = pg;
 
-const pool = new pg.Pool({
+const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : false,
+  // ssl: { rejectUnauthorized: false }, // uncomment if your DB requires SSL
 });
 
 pool.on("error", (err) => {

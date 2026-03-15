@@ -1,0 +1,199 @@
+Understood — I’ll give you the exact file contents to add and the exact shell/git commands to create them in your repo on Replit. I will not ask you to run anything else or run tests. Do these steps and commit; you’ll handle running/deploying later.
+
+Files to add
+
+src/db.js
+src/webhook.js
+Where to mount the router
+
+Edit src/server.js and add a single import + mount line before the existing catch‑all:
+// the catch-all starts at app.use(requireDashboardAuth, async (req, res) => { ... }) near line 1363 in your repo
+Place the mount line immediately above that catch-all.
+Exact file contents (copy/paste)
+
+src/db.js
+Note: your project is ES modules ("type":"module"). Paste this file exactly.
+import pg from 'pg';
+const { Pool } = pg;
+
+const pool = new Pool({
+connectionString: process.env.DATABASE_URL,
+// If your DB requires SSL and you get SSL errors, uncomment the line below:
+// ssl: { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => {
+console.error('Unexpected PG client error', err);
+});
+
+export { pool };
+
+src/webhook.js
+Paste this file exactly.
+import express from 'express';
+const router = express.Router();
+
+function safeJson(obj) {
+try { return JSON.stringify(obj); } catch (e) { return String(obj); }
+}
+
+router.post('/:secret', async (req, res) => {
+try {
+const secret = req.params.secret;
+if (!process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.error('TELEGRAM_WEBHOOK_SECRET not set in env');
+return res.sendStatus(500);
+}
+if (secret !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.warn('Invalid webhook secret attempted');
+return res.sendStatus(403);
+}
+
+const update = req.body;
+console.log('TG update received:', { update_id: update?.update_id ?? null });
+
+// Best-effort DB write: failures are logged but do not block response
+try {
+  const { pool } = await import('./db.js');
+  const now = new Date().toISOString();
+  const payload = safeJson(update);
+  await pool.query(
+    `INSERT INTO messages (source_chat_id, source_message_id, payload, status, created_at)
+     VALUES ($1, $2, $3::jsonb, $4, $5)`,
+    [
+      update?.message?.chat?.id ?? null,
+      update?.message?.message_id ?? null,
+      payload,
+      'received',
+      now,
+    ]
+  );
+} catch (dbErr) {
+  console.error('DB insert failed (continuing):', dbErr?.message ?? dbErr);
+}
+
+// Respond fast so Telegram does not retry
+return res.sendStatus(200);
+} catch (err) {
+console.error('Unhandled error in webhook handler:', err?.stack ?? err);
+return res.sendStatus(500);
+}
+});
+
+export default router;
+
+Edit src/server.js
+Add the following two lines near the top of the file where your other imports live (if you prefer, place with other imports):
+import webhookRouter from './webhook.js';
+
+Then, before the catch‑all handler (the app.use(requireDashboardAuth, async (req, res) => { ... }) at ~line 1363), add this mount line:
+
+// Mount Telegram webhook before the dashboard auth catch-all so Telegram requests bypass dashboard Basic Auth
+app.use('/webhook', webhookRouter);
+
+Important: you said express.json() is already registered earlier; do not re-add it. The router expects JSON body parsing to be active.
+
+Commands to create files and commit (run in Replit shell)
+
+Create files and commit in one go. Run these commands from your repo root:
+mkdir -p src
+cat > src/db.js <<'EOF'
+import pg from 'pg';
+const { Pool } = pg;
+
+const pool = new Pool({
+connectionString: process.env.DATABASE_URL,
+// If your DB requires SSL and you get SSL errors, uncomment the line below:
+// ssl: { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => {
+console.error('Unexpected PG client error', err);
+});
+
+export { pool };
+EOF
+
+cat > src/webhook.js <<'EOF'
+import express from 'express';
+const router = express.Router();
+
+function safeJson(obj) {
+try { return JSON.stringify(obj); } catch (e) { return String(obj); }
+}
+
+router.post('/:secret', async (req, res) => {
+try {
+const secret = req.params.secret;
+if (!process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.error('TELEGRAM_WEBHOOK_SECRET not set in env');
+return res.sendStatus(500);
+}
+if (secret !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.warn('Invalid webhook secret attempted');
+return res.sendStatus(403);
+}
+
+const update = req.body;
+console.log('TG update received:', { update_id: update?.update_id ?? null });
+
+// Best-effort DB write: failures are logged but do not block response
+try {
+  const { pool } = await import('./db.js');
+  const now = new Date().toISOString();
+  const payload = safeJson(update);
+  await pool.query(
+    `INSERT INTO messages (source_chat_id, source_message_id, payload, status, created_at)
+     VALUES ($1, $2, $3::jsonb, $4, $5)`,
+    [
+      update?.message?.chat?.id ?? null,
+      update?.message?.message_id ?? null,
+      payload,
+      'received',
+      now,
+    ]
+  );
+} catch (dbErr) {
+  console.error('DB insert failed (continuing):', dbErr?.message ?? dbErr);
+}
+
+// Respond fast so Telegram does not retry
+return res.sendStatus(200);
+} catch (err) {
+console.error('Unhandled error in webhook handler:', err?.stack ?? err);
+return res.sendStatus(500);
+}
+});
+
+export default router;
+EOF
+
+stage files
+git add src/db.js src/webhook.js
+
+open editor to modify src/server.js and paste the two lines described earlier:
+echo "Now edit src/server.js: add 'import webhookRouter from "./webhook.js";' to imports and add 'app.use('/webhook', webhookRouter);' just before your dashboard catch-all. Then run the commands below when done."
+
+After editing src/server.js, run:
+git add src/server.js
+git commit -m "Add Telegram webhook handler and DB helper; mount /webhook before dashboard auth"
+git push origin main
+What I expect you to do next (operator actions)
+
+Edit src/server.js as instructed (import + app.use mount) and save.
+Run the git commit lines shown (or use Replit UI to commit).
+Add "pg" to package.json dependencies if you don't already have it:
+Add in package.json dependencies: "pg": "^8.11.0"
+Run npm install in Replit shell if you plan to run locally; production deploy on Railway will install during build.
+Do NOT commit secrets. Ensure TELEGRAM_WEBHOOK_SECRET and DATABASE_URL exist in Railway (and optionally in Replit if you want local runs).
+Optional: single command to commit after editing server.js (run once you've added the imports/mount)
+git add src/server.js && git commit -m "Mount Telegram webhook router" && git push origin main
+
+If you want, I can produce a git patch (unified diff) instead of the create-file commands above — say so and I’ll output the patch. Or paste the top of src/server.js here (first ~60 lines + the catch-all fragment around 1363) and I’ll produce an exact edit/patch you can apply (git apply) so nothing is ambiguous.
+
+Questions you may want to answer now (I’ll wait if you want me to act):
+
+Do you want me to produce a unified diff/patch instead of the file-creation commands?
+Confirm messages table schema matches: source_chat_id, source_message_id, payload (jsonb), status, created_at — if different, give exact column names and I’ll update the INSERT.
+Clanker
+11:05 PM
