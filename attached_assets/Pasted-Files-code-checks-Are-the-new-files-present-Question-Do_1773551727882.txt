@@ -1,0 +1,84 @@
+Files & code checks
+
+Are the new files present?
+Question: Does src/db.js exist and match the expected ES-module content?
+Command: ls -la src && sed -n '1,160p' src/db.js
+Does src/webhook.js exist and export the router?
+Question: Does src/webhook.js contain an Express router with router.post('/:secret', ...) and the DB insert?
+Command: sed -n '1,240p' src/webhook.js
+Was src/server.js updated to import and mount the router before the dashboard auth catch‑all?
+Question: Does src/server.js include: import webhookRouter from './webhook.js'; and app.use('/webhook', webhookRouter); placed before the app.use(requireDashboardAuth, ...) catch‑all?
+Command: sed -n '1,220p' src/server.js | sed -n '1,200p'
+And to inspect the mount location: sed -n '1320,1388p' src/server.js
+Dependency & package.json checks
+4. Is pg listed in package.json deps?
+
+Question: Does package.json include "pg": "^8.11.0" (or similar) under dependencies?
+Command: grep -n '"pg"' package.json || sed -n '1,240p' package.json
+Environment variable checks in Replit
+5. Are required secrets present in Replit (for local runs) and Railway (for deploy)?
+
+Question: Are TELEGRAM_WEBHOOK_SECRET and DATABASE_URL defined in Replit Secrets (and Railway)?
+Replit UI: Left sidebar → Secrets. Confirm keys TELEGRAM_WEBHOOK_SECRET and DATABASE_URL exist.
+Railway: Project → Variables. Confirm keys exist and values look correct (do not paste secrets here).
+Quick runtime sanity checks (no tests, just presence)
+6. Is the server script referencing express.json() earlier in src/server.js?
+
+Question: Is app.use(express.json()) present above the webhook mount?
+Command: grep -n "express.json" -n src/server.js || sed -n '1,200p' src/server.js
+Does the webhook file import/export use ES module syntax?
+Question: Are imports like "import express from 'express';" and "export default router;" present in the new files?
+Command: grep -n "import .* from" src/webhook.js src/db.js && tail -n +1 src/webhook.js src/db.js
+Logging & deploy checks
+8. After you deploy, do logs show incoming Telegram updates?
+
+Question: When sending a message to the bot, does Railway/Replit logs display "TG update received: { update_id: ... }"?
+Railway logs: Project → Deployments/Logs. Replit console: view logs in the Repl console.
+Command (tail logs in Replit if you run locally): tail -n 200 /path/to/repl/logfile (or view console output)
+DB write verification
+9. Does the messages table receive a new row when an update arrives?
+
+Question: After sending a message to the bot, is a row inserted into messages with status='received' and payload populated?
+SQL check (run with psql or your DB client):
+SELECT id, source_chat_id, source_message_id, status, created_at FROM messages ORDER BY created_at DESC LIMIT 5;
+If you can't run psql in Replit, run a small script that queries pool:
+node -e "import('./src/db.js').then(m=>m.pool.query('SELECT id,source_chat_id,status,created_at FROM messages ORDER BY created_at DESC LIMIT 5').then(r=>console.log(r.rows)).catch(e=>console.error(e)).finally(()=>process.exit()))"
+Webhook registration checks
+10. Was setWebhook called with the exact path you mounted?
+
+Question: Does getWebhookInfo return the URL you expect (https:///webhook/)?
+Command (replace placeholders):
+curl "https://api.telegram.org/bot/getWebhookInfo"
+Inspect the "url" field in the JSON. If it’s empty, webhook not set.
+HTTP endpoint checks (sanity)
+11. Is the webhook endpoint reachable publicly after deploy?
+
+Question: Does a simple GET/POST to the path return an appropriate status (POST should be used, but GET should probably return 404 or 405)?
+Test (POST a minimal body with the secret; this will not be a valid Telegram update but verifies routing):
+curl -X POST "https:///webhook/" -H "Content-Type: application/json" -d '{"test":1}' -i
+Expected: 200 or 500 if TELEGRAM_WEBHOOK_SECRET missing; 403 if secret mismatches. If 200, route matched.
+Security & placement checks
+12. Is the webhook mounted before the dashboard auth?
+
+Question: Confirm the webhook mount appears earlier in src/server.js than the catch‑all auth block around line 1363.
+Command: sed -n '1200,1400p' src/server.js
+Confirm import and app.use('/webhook', ...) are before the requireDashboardAuth block.
+Edge-case and robustness checks
+13. Is DB error handling non-blocking in the webhook handler?
+
+Question: Does src/webhook.js catch DB errors and log them without preventing res.sendStatus(200)?
+Command: grep -n "DB insert failed" -n src/webhook.js || sed -n '1,240p' src/webhook.js
+Does src/db.js create a Pool with connectionString from process.env.DATABASE_URL (and optional SSL comment)?
+Question: Is the Pool configured correctly to use DATABASE_URL?
+Command: sed -n '1,160p' src/db.js
+Questions for you to answer if something fails
+
+If logs show 403: Did you set TELEGRAM_WEBHOOK_SECRET in Railway/Replit to the same value used in your setWebhook URL?
+If logs show no requests: Is the service deployed and does RAILWAY_PUBLIC_DOMAIN match the domain used in setWebhook?
+If DB inserts fail: Does DATABASE_URL connect from Railway to your Postgres (credentials, host, SSL)?
+If getWebhookInfo shows a mismatch: Did you call setWebhook with the exact path that matches your mount (e.g., /webhook/)?
+If you want, I can:
+
+Generate a concise one-shot script that runs the above commands in sequence (except ones that reveal secrets) so you can paste it into Replit and run it; or
+Produce a unified git patch to apply if you prefer that instead of creating files manually.
+Which would you like next?
