@@ -1,4 +1,5 @@
 import express from "express";
+import { pool } from "./db.js";
 const router = express.Router();
 
 function safeJson(obj) {
@@ -6,7 +7,6 @@ function safeJson(obj) {
 }
 
 async function insertMessage(update) {
-  const { pool } = await import("./db.js");
   const now = new Date().toISOString();
   const payload = safeJson(update);
   await pool.query(
