@@ -1,0 +1,186 @@
+Plan
+
+Add a new webhook route file that:
+Verifies the secret path segment against process.env.TELEGRAM_WEBHOOK_SECRET
+Logs the update id to stdout for quick debugging
+Inserts a minimal row into your messages table (Postgres) and returns 200 immediately
+Keeps processing work asynchronous (responds fast)
+Wire that route into your existing Express app (or replace the server if you don’t have one)
+Run setWebhook after deploy
+Files to add / modify
+
+New file: src/webhook.js
+Modify: src/index.js (or your existing server file) — I’ll offer two possible patches: (A) if you already have an Express app, add a single line to mount the route; (B) if you don’t, I’ll provide a complete minimal server.js you can use instead.
+Make these edits in Replit (or git locally) and commit.
+
+A. Add src/webhook.js
+Create file src/webhook.js with this exact content:
+
+const express = require('express');
+const router = express.Router();
+
+// Simple defensive helper: parse bigints if you use them. Adjust if unnecessary.
+function safeJson(obj) {
+try { return JSON.stringify(obj); } catch (e) { return String(obj); }
+}
+
+// POST /webhook/:secret
+router.post('/webhook/:secret', async (req, res) => {
+try {
+const secret = req.params.secret;
+if (!process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.error('TELEGRAM_WEBHOOK_SECRET not set in env');
+return res.sendStatus(500);
+}
+if (secret !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+console.warn('Invalid webhook secret attempt');
+return res.sendStatus(403);
+}
+
+const update = req.body;
+// Quick debug log (update_id only)
+console.log('TG update received:', { update_id: update && update.update_id });
+
+// Minimal DB write: insert into messages table (adjust table/columns to your schema)
+// This assumes you use node-postgres (pg) and exported a pool from ../db or process.env.DATABASE_URL
+try {
+  const { pool } = require('./db'); // adjust path if needed; see note below
+  const now = new Date().toISOString();
+  const payload = safeJson(update);
+  // Example table: messages (source_chat_id BIGINT, source_message_id BIGINT, payload JSONB, status TEXT, created_at TIMESTAMP)
+  await pool.query(
+    `INSERT INTO messages (source_chat_id, source_message_id, payload, status, created_at)
+     VALUES ($1, $2, $3::jsonb, $4, $5)`,
+    [
+      (update.message && update.message.chat && update.message.chat.id) || null,
+      (update.message && update.message.message_id) || null,
+      payload,
+      'received',
+      now,
+    ]
+  );
+} catch (dbErr) {
+  // Log DB error but do NOT block response
+  console.error('DB insert failed (continuing):', dbErr && dbErr.message);
+}
+
+// Respond quickly
+return res.sendStatus(200);
+} catch (err) {
+console.error('Unhandled error in webhook handler:', err && err.stack ? err.stack : err);
+// Return 200 if you want Telegram to stop retrying even if internal error
+return res.sendStatus(500);
+}
+});
+
+module.exports = router;
+
+Notes about db import:
+
+I referenced require('./db') expecting a db module that exports { pool }, using node-postgres (pg). If your repo already has a DB helper, adjust the require path. If you do NOT have one, add the minimal db file below.
+Optional: minimal DB helper (if you don’t already have one)
+Add src/db.js:
+
+const { Pool } = require('pg');
+
+const pool = new Pool({
+connectionString: process.env.DATABASE_URL,
+ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
+});
+
+pool.on('error', (err) => {
+console.error('Unexpected PG client error', err);
+});
+
+module.exports = { pool };
+
+If your DB setup is different, adapt accordingly. If you use an ORM, replace the pool.insert call with the ORM equivalent.
+B. Wire the route into your Express server
+Pick one of the following depending on your repo:
+
+B1 — You already have src/index.js (Express)
+Open src/index.js and add these lines near your existing middleware/routes (after body-parser/json middleware). Exact patch to add:
+
+const express = require('express');
+// ... existing requires and app initialization
+
+// Ensure body parser is enabled
+app.use(express.json());
+
+// Mount the webhook route
+const webhookRouter = require('./webhook'); // adjust path if webhook.js is placed elsewhere
+app.use(webhookRouter);
+
+// ... existing app.listen(...) etc.
+
+If you already have app.use(express.json()) in another spot, don’t duplicate — ensure JSON body parsing is enabled before the webhook route.
+
+B2 — You do NOT have an HTTP server or prefer a minimal replacement
+Create src/index.js with this content (complete, standalone):
+
+const express = require('express');
+const webhookRouter = require('./webhook');
+const app = express();
+
+app.use(express.json());
+app.use(webhookRouter);
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+console.log(ClawDBot webhook listening on port ${port});
+});
+
+C. Package.json: ensure dependencies
+If your package.json doesn’t already include express and pg, add them. Example additions to dependencies:
+
+"dependencies": {
+"express": "^4.18.2",
+"pg": "^8.11.0"
+}
+
+If you add src/db.js, you need pg. If you already use a different DB client, skip pg and adjust imports.
+
+D. Commit and deploy
+Commands (in Replit shell or locally):
+
+git add src/webhook.js src/index.js src/db.js package.json
+git commit -m "Add Telegram webhook handler and DB write (webhook route)"
+git push origin main
+
+In Railway / Replit, let the service build and deploy. Wait until the public domain is available.
+
+E. Register the webhook with Telegram (once APP_BASE_URL known)
+Run this from your terminal (replace placeholders EXACTLY):
+
+curl "https://api.telegram.org/bot/setWebhook?url=https:///webhook/&max_connections=40"
+
+Replace:
+
+with the token you saved in Railway env
+with the domain Railway shows (example.up.railway.app)
+with the secret you stored in Railway env
+F. Verify
+
+Check webhook info:
+curl "https://api.telegram.org/bot/getWebhookInfo"
+
+Expect the url field to exactly match the URL you set. If last_error is populated, inspect the message.
+
+Send a message to your bot in Telegram. Then:
+Check your Railway service logs — you should see the console log "TG update received" with an update_id.
+Check messages table in your DB — a new row should exist with payload and status 'received'.
+Troubleshooting quick guide (if something fails)
+
+403 from Telegram (after setWebhook) or 403 in logs: webhook path's secret doesn't match TELEGRAM_WEBHOOK_SECRET env. Confirm exact match (no spaces/newlines).
+No logs: app not deployed or wrong domain. Confirm Railway build succeeded and public domain is live.
+DB insert errors: inspect error in logs; confirm DATABASE_URL is set and reachable from Railway service; run psql externally to validate credentials if needed.
+Telegram last_error says 502 or timeout: your handler returned non-200 or took too long. Make sure the route returns 200 immediately.
+Questions I need from you if anything differs
+
+Is your main server file at src/index.js or another path? Paste repo top-level listing (ls -la) if unsure.
+Do you already have a DB helper module? If yes, what path and variable name exports the pool/client?
+Do you use TypeScript, an ORM (Sequelize/TypeORM/Prisma), or a different runtime? If so I’ll adapt changes.
+Confirm whether you want the webhook path to be /webhook/ exactly or a different path (you can keep it as given).
+Next action
+
+Pick one: I’ll (A) produce a git diff/patch you can apply directly, or (B) I’ll adapt the changes to your actual repo if you paste the project structure or path to the server file. Which do you want?
